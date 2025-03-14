@@ -8,7 +8,8 @@ module ra(
     output logic ADC_CONVST, ADC_SDI, ADC_SCK,  // ADC control signals
     output logic [6:0] debug_leds,    // Separate Debug LEDs
     output logic servo_pwm,            // ✅ PWM Output for Servo
-	 output logic servo_pwm2            // ✅ PWM Output for Second Motor
+	output logic servo_pwm2,            // ✅ PWM Output for Second Motor
+   output logic red, green, blue // DM LEDs
 );
 
     // Internal Signals
@@ -53,6 +54,8 @@ module ra(
     always_ff @(posedge CLOCK_50) begin
         $display("DEBUG: Encoder -> enc1_a = %b, enc1_b = %b, cw = %b, ccw = %b", enc1_a, enc1_b, cw, ccw);
     end
+
+    whiteOut dmLEDS (.red(dummy), .green, .blue) ; // comment out to use BP leds
 
     // ------------------------------------------------------------
     // **Encoder to Channel Mapping**
