@@ -3,13 +3,15 @@ module ra(
     input logic enc1_a, enc1_b,       // Encoder signals (unused now)
     input logic ADC_SDO,              // ADC serial data output
 	 input logic s1, s2,              // ✅ Switches for second motor control
+	 input logic JOY_SEL,             //swiches between servo motors 2-4
     output logic [6:0] leds,          // 7-segment display output
     output logic [3:0] ct,            // Digit control for multiplexing
     output logic ADC_CONVST, ADC_SDI, ADC_SCK,  // ADC control signals
     output logic [6:0] debug_leds,    // Separate Debug LEDs
-    output logic servo_pwm,            // ✅ PWM Output for Servo
-	output logic servo_pwm2,            // ✅ PWM Output for Second Motor
+    output logic servo_pwm,            // ✅ PWM Output for Servo, claw gripper spinner
+	output logic servo_pwm2, servo_pwm3, servo_pwm4,           // ✅ PWM Output for Second Motor
    output logic red, green, blue // DM LEDs
+	
 );
 
     // Internal Signals
@@ -20,7 +22,7 @@ module ra(
 	 logic [2:0] chan;
     logic adc_clk;
     logic [11:0] adc_value;     // ADC result (Joystick position)
-     logic [7:0] angle, angle2;
+     logic [7:0] angle, angle2, angle3, angle4;  //declaring angles of servos
 	 logic [11:0] target_angle;  // Servo target angle
 	 logic [11:0] last_adc_value; // ✅ Tracks previous ADC value
 	 logic [25:0] update_counter, update_counter2;
@@ -55,7 +57,7 @@ module ra(
         $display("DEBUG: Encoder -> enc1_a = %b, enc1_b = %b, cw = %b, ccw = %b", enc1_a, enc1_b, cw, ccw);
     end
 
-    whiteOut dmLEDS (.red(dummy), .green, .blue) ; // comment out to use BP leds
+    //whiteOut dmLEDS (.red, .green, .blue) ; // comment out to use BP leds
 
     // ------------------------------------------------------------
     // **Encoder to Channel Mapping**
@@ -83,72 +85,11 @@ module ra(
     );
 	 
 
-    // ------------------------------------------------------------
-    // Servo Control Logic - Adjusts Angle Based on Joystick
-    // ------------------------------------------------------------
-    /*always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-        if (!reset_n) begin
-            target_angle <= 12'd2048;  // Start at center (90°)
-        end else begin
-            if (adc_value > 2300) begin
-                target_angle <= (target_angle < 4000) ? target_angle + 10 : 4000; // Increase angle
-            end else if (adc_value < 1800) begin
-                target_angle <= (target_angle > 1000) ? target_angle - 10 : 1000; // Decrease angle
-            end
-        end
-    end*/
-	 /*
-	 always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-    if (!reset_n) begin
-        target_angle <= 12'd1000;  // ✅ Start at 0° (minimum angle)
-        last_adc_value <= adc_value; // ✅ Initialize tracking of last ADC value
-    end else begin
-        if (adc_value > last_adc_value) begin
-            // ✅ If joystick is increasing, keep increasing angle
-            target_angle <= (target_angle < 4000) ? target_angle + 10 : 4000;
-        end else if (adc_value < last_adc_value) begin
-            // ✅ If joystick is decreasing, keep decreasing angle
-            target_angle <= (target_angle > 1000) ? target_angle - 10 : 1000;
-        end
-        last_adc_value <= adc_value; // ✅ Store the last ADC value for comparison
-    end
-end*/
+  
 
 
 logic direction;  // ✅ Tracks direction (0 = up, 1 = down)
-//this increments up and down seemlessl
-/*
-always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-    if (!reset_n) begin
-        angle <= 8'd0;          // ✅ Start at 0°
-        update_counter <= 26'd0; // ✅ Reset speed counter
-        direction <= 1'b0;       // ✅ Start moving up
-    end else begin
-        if (update_counter >= 26'd500_000) begin // ✅ Adjust speed (~9 sec per full sweep)
-            update_counter <= 0; // ✅ Reset counter every update
 
-            if (direction == 1'b0) begin
-                // ✅ Moving up
-                if (angle < 180)
-                    angle <= angle + 1;
-                else begin
-                    direction <= 1'b1;  // ✅ Switch direction at 180°
-                    angle <= 179;       // ✅ Ensure immediate transition without delay
-                end
-            end else begin
-                // ✅ Moving down
-                if (angle > 0)
-                    angle <= angle - 1;
-                else begin
-                    direction <= 1'b0;  // ✅ Switch direction at 0°
-                    angle <= 1;         // ✅ Ensure immediate transition without delay
-                end
-            end
-        end else begin
-            update_counter <= update_counter + 1;
-        end
-    end
-end*/
   // ------------------------------------------------------------
     // ✅ **First Motor: Joystick-Based Servo Control**
     // ------------------------------------------------------------
@@ -175,28 +116,138 @@ always_ff @(posedge CLOCK_50 or negedge reset_n) begin
     end
 end
 
+// ------------------------------------------------------------
+// ✅ **Motor Selection Control via JOY_SEL Button**
+// ------------------------------------------------------------
+// This logic detects a rising edge (button press) on JOY_SEL,
+// and cycles through the active servo motor control:
+// - 0 → Motor 2 (default)
+// - 1 → Motor 3
+// - 2 → Motor 4
+// - then wraps back around to 0 (Motor 2)
+//
+// `current_motor` holds the index of the selected motor
+// `JOY_SEL_prev` is used to detect the edge of the button
+// ------------------------------------------------------------
+logic [19:0] debounce_counter;
+logic JOY_SEL_stable;
+// ------------------------------------------------------------
+// ✅ JOY_SEL Debounce and Motor Selector
+// ------------------------------------------------------------
+// Stabilizes input and switches motors on single clean press
+// Uses a counter to ignore bouncing/transients
+// ------------------------------------------------------------
+always_ff @(posedge CLOCK_50 or negedge reset_n) begin
+    if (!reset_n) begin
+        current_motor     <= 2'd0;     // Start with Motor 2
+        JOY_SEL_prev      <= 1'b1;
+        debounce_counter  <= 0;
+        JOY_SEL_stable    <= 1'b1;
+    end else begin
+        // Debounce: if input is stable low, increment counter
+        if (JOY_SEL_prev != JOY_SEL) begin
+            debounce_counter <= 0;  // Reset counter if input is changing
+        end else begin
+            if (debounce_counter < 20'd800_000) begin
+                debounce_counter <= debounce_counter + 1;
+            end else begin
+                JOY_SEL_stable <= JOY_SEL;  // Register stable state after hold
+            end
+        end
+
+        // Only act on stable falling edge (button press)
+        if (JOY_SEL_stable && !JOY_SEL) begin
+            case (current_motor)
+                2'd0: current_motor <= 2'd1;
+                2'd1: current_motor <= 2'd2;
+                2'd2: current_motor <= 2'd0;
+                default: current_motor <= 2'd0;
+            endcase
+        end
+
+        JOY_SEL_prev <= JOY_SEL;
+    end
+end
+
+/*
+always_ff @(posedge CLOCK_50 or negedge reset_n) begin
+    if (!reset_n) begin
+        current_motor <= 2'd0;   // Start at Motor 2
+        JOY_SEL_prev  <= 1'b1;   // Assume unpressed at reset
+    end else begin
+        // Edge Detection: check if button just transitioned from high to low
+        if (JOY_SEL_prev && !JOY_SEL) begin
+            // Cycle to the next motor (wrap around after 2)
+            current_motor <= (current_motor == 2'd2) ? 2'd0 : current_motor + 1;
+        end
+        // Save current button state for edge detection on next cycle
+        JOY_SEL_prev <= JOY_SEL;
+    end
+end*/
+
+
     // ------------------------------------------------------------
     // ✅ **Second Motor: Button-Based Control**
     // ------------------------------------------------------------
-	 /*always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-        if (!reset_n) begin
-            angle2 <= 8'd90;
-            update_counter2 <= 26'd0;
-        end else begin
-            update_counter2 <= update_counter2 + 1;
-            if (update_counter2 >= 26'd1_500_000) begin  // ✅ Faster update (~33ms per step)
-                update_counter2 <= 0;
-                if (s1) begin
-                    angle2 <= (angle2 < 180) ? angle2 + 2 : 180;  // ✅ Increment with SW[0]
-                end else if (s2) begin
-                    angle2 <= (angle2 > 0) ? angle2 - 2 : 0;  // ✅ Decrement with SW[2]
+	 logic [1:0] current_motor;     // 2-bit counter: 0 = M2, 1 = M3, 2 = M4
+logic JOY_SEL_prev;            // For edge detection
+
+	 always_ff @(posedge CLOCK_50 or negedge reset_n) begin
+    if (!reset_n) begin
+        angle2 <= 8'd90;
+        angle3 <= 8'd90;
+        angle4 <= 8'd90;
+        update_counter2 <= 26'd0;
+    end else begin
+        update_counter2 <= update_counter2 + 1;
+
+        if (update_counter2 >= 26'd1_000_000) begin
+            update_counter2 <= 0;
+
+            case (current_motor)
+                2'd0: begin  // Motor 2
+                    if (!s1 && s2)
+                        angle2 <= (angle2 < 180) ? angle2 + 1 : 180;
+                    else if (!s2 && s1)
+                        angle2 <= (angle2 > 0) ? angle2 - 1 : 0;
                 end
-            end
+                2'd1: begin  // Motor 3
+                    if (!s1 && s2)
+                        angle3 <= (angle3 < 180) ? angle3 + 1 : 180;
+                    else if (!s2 && s1)
+                        angle3 <= (angle3 > 0) ? angle3 - 1 : 0;
+                end
+                2'd2: begin  // Motor 4
+                    if (!s1 && s2)
+                        angle4 <= (angle4 < 180) ? angle4 + 1 : 180;
+                    else if (!s2 && s1)
+                        angle4 <= (angle4 > 0) ? angle4 - 1 : 0;
+                end
+            endcase
         end
     end
+end
+
+/*always_ff @(posedge CLOCK_50 or negedge reset_n) begin
+    if (!reset_n) begin
+        angle2 <= 8'd90;
+        update_counter2 <= 26'd0;
+    end else begin
+        update_counter2 <= update_counter2 + 1;
+
+        if (update_counter2 >= 26'd1_000_000) begin  // ~20ms step delay
+            update_counter2 <= 0;
+
+            if (!s1 && s2)
+                angle2 <= (angle2 < 180) ? angle2 + 1 : 180;
+            else if (!s2 && s1)
+                angle2 <= (angle2 > 0) ? angle2 - 1 : 0;
+            // If both pressed or neither pressed, angle2 stays unchanged
+        end
+    end
+end
 */
-//
-always_ff @(posedge CLOCK_50 or negedge reset_n) begin
+/*always_ff @(posedge CLOCK_50 or negedge reset_n) begin
     if (!reset_n) begin
         angle2 <= 8'd90;         // ✅ Start at 90° (Neutral Position)
     end else begin
@@ -208,84 +259,67 @@ always_ff @(posedge CLOCK_50 or negedge reset_n) begin
             angle2 <= (angle2 > 0) ? angle2 - 2 : 0;
         end
     end
+end*/
+
+// ------------------------------------------------------------
+// ✅ **LED Indicator Control for Active Motor**
+// ------------------------------------------------------------
+// This logic lights up one LED to show which motor is being controlled:
+// - Green LED when Motor 2 is selected
+// - Red LED when Motor 3 is selected
+// - Blue LED when Motor 4 is selected
+// Only one LED is ON at a time, based on `current_motor` state.
+// ------------------------------------------------------------
+always_comb begin
+    // Turn off all LEDs by default
+    red   = 1'b0;
+    green = 1'b0;
+    blue  = 1'b0;
+
+    // Turn ON the LED corresponding to the active motor
+    case (current_motor)
+        2'd0: green = 1'b1;  // Motor 2
+        2'd1: red   = 1'b1;  // Motor 3
+        2'd2: blue  = 1'b1;  // Motor 4
+        default: ;           // No LED if invalid state (shouldn't happen)
+    endcase
 end
 
 
-/*
-module servo_simple (
-    input logic CLOCK_50,     // 50 MHz system clock
-    input logic reset_n,      // Active-low reset
-    output logic servo_pwm    // PWM output to servo motor
-);
-
-    // Parameters for PWM (50 MHz clock)
-    localparam int PWM_PERIOD = 1_000_000;      // 20 ms (50Hz)
-    localparam int MIN_PULSE  = 50_000;         // 1 ms pulse (0°)
-    localparam int MAX_PULSE  = 100_000;        // 2 ms pulse (180°)
-    localparam int STEP_SIZE  = 500;            // Pulse increment size for smooth motion
-
-    // Internal signals
-    logic [19:0] counter;
-    logic [19:0] pulse_width;
-    logic increasing;
-
-    // PWM generation logic
-    always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-        if (!reset_n) begin
-            counter      <= 0;
-            pulse_width  <= MIN_PULSE;
-            increasing   <= 1'b1;
-            servo_pwm    <= 0;
-        end else begin
-            // PWM period counter (0 to 1,000,000 counts)
-            if (counter < PWM_PERIOD - 1)
-                counter <= counter + 1;
-            else
-                counter <= 0;
-
-            // Generate PWM output
-            servo_pwm <= (counter < pulse_width) ? 1'b1 : 1'b0;
-
-            // Update pulse width once per PWM cycle
-            if (counter == PWM_PERIOD - 1) begin
-                if (increasing) begin
-                    if (pulse_width < MAX_PULSE)
-                        pulse_width <= pulse_width + STEP_SIZE;
-                    else
-                        increasing <= 1'b0; // Switch to decreasing
-                end else begin
-                    if (pulse_width > MIN_PULSE)
-                        pulse_width <= pulse_width - STEP_SIZE;
-                    else
-                        increasing <= 1'b1; // Switch to increasing
-                end
-            end
-        end
-    end
-
-endmodule*?
 	 
     // ------------------------------------------------------------
     // PWM Generator for Servo Control
     // ------------------------------------------------------------
-    /*pwm_generator pwm_inst (
-        .clk(CLOCK_50),
-        .reset_n(reset_n),
-        .adc_value(target_angle), // Pass processed servo angle
-        .pwm_out(servo_pwm)
-    );*/
+	  //servo motor spins claw gripper controlled by channel 0. the closing of the gripper will be controlled by channel 1.
 	  pwm_generator pwm_inst (
         .clk(CLOCK_50),
         .reset_n(reset_n),
         .angle(angle), // ✅ Pass processed angle instead of ADC value
         .pwm_out(servo_pwm)
     );
+	 
+	 //servo 2 (arm-base, might need to figure out how to get 2 inverse controls here)
 	 pwm_generator pwm_inst2 (
         .clk(CLOCK_50),
         .reset_n(reset_n),
         .angle(angle2),
         .pwm_out(servo_pwm2)
     );
+	 //servo 3 (arm-b
+	 pwm_generator pwm_inst3 (
+    .clk(CLOCK_50),
+    .reset_n(reset_n),
+    .angle(angle3),
+    .pwm_out(servo_pwm3)
+);
+    //servo 4
+pwm_generator pwm_inst4 (
+    .clk(CLOCK_50),
+    .reset_n(reset_n),
+    .angle(angle4),
+    .pwm_out(servo_pwm4)
+);
+
 
     // ------------------------------------------------------------
     // 7-Segment Display Logic (unchanged)
@@ -311,17 +345,7 @@ endmodule*?
     assign digit = clk_div_count[15:14];
 
     // Display ADC Value (shows 12-bit ADC result on 4-digit display)
-    /*
-	always_comb begin
-        case (digit)
-            2'b00: disp_digit = {1'b0, chan};       // Display ADC channel (0-7)
-            2'b00: disp_digit = adc_value[11:8];  
-            2'b01: disp_digit = adc_value[7:4];   
-            2'b10: disp_digit = adc_value[3:0];       // Lower ADC result bits
-            default: disp_digit = 4'hF;             // Blank display (Failsafe)
-        endcase
-    end
-	 */
+    
 	 //adding timing with clock seems to have fixed the problem
 	 always_ff @(posedge CLOCK_50 or negedge reset_n) begin
     if (!reset_n) begin
