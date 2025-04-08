@@ -10,7 +10,10 @@ module ra(
     output logic [6:0] debug_leds,    // Separate Debug LEDs
     output logic servo_pwm,            // ✅ PWM Output for Servo, claw gripper spinner
 	output logic servo_pwm2, servo_pwm3, servo_pwm4,servo_pwm6, servo_pwm5,           // ✅ PWM Output for Second Motor
-   output logic red, green, blue // DM LEDs
+   output logic red, green, blue, // DM LEDs
+	input logic enc2_a, enc2_b,  // Second encoder for stepper
+output logic dir_pulse, step_pulse// Stepper direction and step outputs
+
 	
 );
 
@@ -48,6 +51,14 @@ module ra(
         .cw(cw),
         .ccw(ccw)
     );
+
+	 encoder enc_2 (
+    .clk(CLOCK_50),
+    .a(enc2_a),
+    .b(enc2_b),
+    .cw(cw2),
+    .ccw(ccw2)
+);
 
     // Debugging: Show encoder pulses on separate debug LEDs
     assign debug_leds[6] = cw;
@@ -92,7 +103,7 @@ module ra(
 logic direction;  // ✅ Tracks direction (0 = up, 1 = down)
 
   // ------------------------------------------------------------
-    // ✅ **First Motor: Joystick-Based Servo Control**
+    // ✅ **servo Motor 1,5: Joystick-Based Servo Control**
     // ------------------------------------------------------------
 // Declare internal signals if not already declared
 logic toggle_state;  
@@ -266,7 +277,7 @@ end*/
 
 
     // ------------------------------------------------------------
-    // ✅ **Second Motor: Button-Based Control**
+    // ✅ **Servo Motor 2,3,4,6: Button-Based Control**
     // ------------------------------------------------------------
 	 logic [1:0] current_motor;     // 2-bit counter: 0 = M2, 1 = M3, 2 = M4
 logic JOY_SEL_prev;            // For edge detection
@@ -309,38 +320,6 @@ logic JOY_SEL_prev;            // For edge detection
     end
 end
 
-/*always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-    if (!reset_n) begin
-        angle2 <= 8'd90;
-        update_counter2 <= 26'd0;
-    end else begin
-        update_counter2 <= update_counter2 + 1;
-
-        if (update_counter2 >= 26'd1_000_000) begin  // ~20ms step delay
-            update_counter2 <= 0;
-
-            if (!s1 && s2)
-                angle2 <= (angle2 < 180) ? angle2 + 1 : 180;
-            else if (!s2 && s1)
-                angle2 <= (angle2 > 0) ? angle2 - 1 : 0;
-            // If both pressed or neither pressed, angle2 stays unchanged
-        end
-    end
-end
-*/
-/*always_ff @(posedge CLOCK_50 or negedge reset_n) begin
-    if (!reset_n) begin
-        angle2 <= 8'd90;         // ✅ Start at 90° (Neutral Position)
-    end else begin
-        if (!s1) begin
-            // ✅ Button `s1` pressed → Increase angle
-            angle2 <= (angle2 < 180) ? angle2 + 2 : 180;
-        end else if (!s2) begin
-            // ✅ Button `s2` pressed → Decrease angle
-            angle2 <= (angle2 > 0) ? angle2 - 2 : 0;
-        end
-    end
-end*/
 
 // ------------------------------------------------------------
 // ✅ **LED Indicator Control for Active Motor**
@@ -365,6 +344,7 @@ always_comb begin
         default: ;           // No LED if invalid state (shouldn't happen)
     endcase
 end
+
 
 
 	 
@@ -415,7 +395,27 @@ pwm_generator pwm_inst5 (
     .pwm_out(servo_pwm5)
 );
 
-
+///////////////////////////////////////////////////////////////////////////
+	// Stepper module 
+	
+	
+	stepperInterface #(
+    .NUM_STEPS(1),
+    .PULSE_LENGTH(50000)
+) stepperInterface_inst (
+    .CLOCK_50(CLOCK_50),
+    .cw(cw2),
+    .ccw(ccw2),
+    .reset_n(reset_n),
+    .red(dummy1),
+    .green(dummy2),
+    .blue(dummy3),
+    .dir(dir_pulse),
+    .step(step_pulse)
+);
+	
+	
+	
     // ------------------------------------------------------------
     // 7-Segment Display Logic (unchanged)
     // ------------------------------------------------------------
