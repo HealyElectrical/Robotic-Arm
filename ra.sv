@@ -12,7 +12,7 @@ module ra(
 	output logic servo_pwm2, servo_pwm3, servo_pwm4,servo_pwm6, servo_pwm5,           // ✅ PWM Output for Second Motor
    output logic red, green, blue, // DM LEDs
 	input logic enc2_a, enc2_b,  // Second encoder for stepper
-output logic dir_pulse, step_pulse// Stepper direction and step outputs
+   output logic dir_pulse, step_pulse// Stepper direction and step outputs
 
 	
 );
@@ -25,10 +25,11 @@ output logic dir_pulse, step_pulse// Stepper direction and step outputs
 	 logic [2:0] chan;
     logic adc_clk;
     logic [11:0] adc_value;     // ADC result (Joystick position)
-     logic [7:0] angle, angle2, angle3, angle4, angle6, angle5;  //declaring angles of servos
+    logic [7:0] angle, angle2, angle3, angle4, angle6, angle5;  //declaring angles of servos
 	 logic [11:0] target_angle;  // Servo target angle
 	 logic [11:0] last_adc_value; // ✅ Tracks previous ADC value
 	 logic [25:0] update_counter, update_counter2, update_counter5;
+	 logic cwIn, cw, ccwIn, ccw, cw2In, cw2, ccw2In, ccw2; // for enc_down module
 
     // ------------------------------------------------------------
     // Clock Divider for ADC (1.5625 MHz from 50 MHz)
@@ -42,23 +43,26 @@ output logic dir_pulse, step_pulse// Stepper direction and step outputs
 
     assign adc_clk = clk_div_adc[4];
 	 // ------------------------------------------------------------
-    // **Encoder Module**
+    // **Encoder Modules**
     // ------------------------------------------------------------
-	  encoder enc_inst (
-        .clk(CLOCK_50),
-        .a(enc1_a),   // ✅ Ensure the correct encoder signals are used
-        .b(enc1_b),
-        .cw(cw),
-        .ccw(ccw)
+	 encoder enc_inst (
+       .clk(CLOCK_50),
+       .a(enc1_a),   // ✅ Ensure the correct encoder signals are used
+       .b(enc1_b),
+       .cw(cwIn),
+       .ccw(ccwIn)
     );
 
 	 encoder enc_2 (
-    .clk(CLOCK_50),
-    .a(enc2_a),
-    .b(enc2_b),
-    .cw(cw2),
-    .ccw(ccw2)
-);
+		 .clk(CLOCK_50),
+		 .a(enc2_a),
+		 .b(enc2_b),
+		 .cw(cw2In),
+		 .ccw(ccw2In)
+	);
+	
+	enc_down enc_down_1 (.clk(CLOCK_50), .reset_n(reset_n), .cw_in(cwIn), .ccw_in(ccwIn), .cw_out(cw), .ccw_out(ccw)) ;
+	enc_down enc_down_2 (.clk(CLOCK_50), .reset_n(reset_n), .cw_in(cw2In), .ccw_in(ccw2In), .cw_out(cw2), .ccw_out(ccw2)) ;
 
     // Debugging: Show encoder pulses on separate debug LEDs
     assign debug_leds[6] = cw;
