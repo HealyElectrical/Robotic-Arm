@@ -1,98 +1,131 @@
+//==========================================================================
 // adcInterface.sv
-// 2/9/2025
-// By: Mikhail R
-// Description: Implements FSM for LTC2308 ADC interface
-// 	Continuously samples the requested ADC channel and outputs the conversion result
-/////////////////////////////////////////////////////////////////////////////////////
-module adcinterface(
-   input logic clk, reset_n,   // reset_n is active low
-   input logic [2:0] chan,     // ADC channel requested by user
-   output logic [11:0] result, // ADC conversion result
-   output logic ADC_CONVST, ADC_SCK, ADC_SDI, // Start-adc-Conversion bit, adc-clk, adc-in
-   input logic ADC_SDO         // ADC output (to be loaded into result)
+// Author     : Mikhail Rego
+// Date       : 02/09/2025
+// Description: FSM to interface with LTC2308 ADC. Continuously samples the
+//              selected ADC channel and outputs the 12-bit conversion result.
+//==========================================================================
+
+module adcInterface (
+    input  logic        clk,
+    input  logic        reset_n,         // Active-low reset
+    input  logic [2:0]  chan,            // Requested ADC channel (0–7)
+    output logic [11:0] result,          // Final ADC result (12 bits)
+
+    output logic        ADC_CONVST,      // Start-conversion signal
+    output logic        ADC_SCK,         // Serial clock to ADC
+    output logic        ADC_SDI,         // Serial data input to ADC
+    input  logic        ADC_SDO          // Serial data output from ADC
 );
 
-   // State definitions
-   typedef enum logic [2:0] {HOLD, CONVST_HIGH, CONVST_LOW, TRANSFER, WAIT} state_t;
-   state_t state, nextState;
+    // === FSM Declaration ===
+    typedef enum logic [2:0] {
+        HOLD, CONVST_HIGH, CONVST_LOW, TRANSFER, WAIT
+    } state_t;
 
-   logic [3:0] transferCount;  // Counts the 12 cycles of SCK
-   logic [11:0] configWord;    // 6-bit config + 6-bit padding
-   logic [11:0] tempResult;    // Temporary result storage
+    state_t state, nextState;
 
-   // Next-State Logic & Combinational Outputs
-   always_comb begin
-      nextState = state;
-      ADC_CONVST = 0;
+    // === Internal Registers ===
+    logic [3:0]  transferCount;   // Counts 12 SCK cycles
+    logic [11:0] configWord;      // Configuration word sent to ADC
+    logic [11:0] tempResult;      // Temporary capture of ADC result
 
-      case (state)
-         HOLD:        nextState = CONVST_HIGH;
-         CONVST_HIGH: begin nextState = CONVST_LOW; ADC_CONVST = 1; end
-         CONVST_LOW:  nextState = TRANSFER;
-         TRANSFER:    nextState = (transferCount >= 4'd12) ? WAIT : TRANSFER;
-         WAIT:        nextState = CONVST_HIGH;
-         default:     nextState = HOLD;
-      endcase
-   end
+    // ============================================================================
+    // FSM Next-State Logic & ADC_CONVST Control
+    // ============================================================================
+    always_comb begin
+        nextState   = state;
+        ADC_CONVST  = 1'b0;
 
-   // State Register
-   always_ff @(negedge clk or negedge reset_n) begin
-      if (!reset_n) begin
-         state <= HOLD;
-         //transferCount <= 4'b0;
-         configWord <= 12'b0;
-      end else begin
-         state <= nextState;
-         if (state == CONVST_HIGH)
-            configWord <= {1'b1, chan[0], chan[2:1], 1'b1, 1'b0, 6'b000000};
-      end
-   end
+        case (state)
+            HOLD:         nextState = CONVST_HIGH;
 
-   // ADC SDI Logic
-  always_ff @(negedge clk or negedge reset_n) begin
-      if (!reset_n) begin
-         ADC_SDI <= 0;
-      end else if (state == CONVST_LOW) begin
-         ADC_SDI <= configWord[11]; // Preload MSB
-      end else if (state == TRANSFER && transferCount < 12) begin
-         ADC_SDI <= configWord[11 - transferCount]; // Send next bit
-      end else begin
-         ADC_SDI <= 0;
-      end
-   end
-	
+            CONVST_HIGH: begin
+                nextState  = CONVST_LOW;
+                ADC_CONVST = 1'b1;  // Pulse high
+            end
 
+            CONVST_LOW:   nextState = TRANSFER;
 
-   // Capture ADC_SDO at posedge clk
-   always_ff @(posedge clk or negedge reset_n) begin
-      if (!reset_n) begin
-         tempResult <= 12'b0;
-      end else if (state == TRANSFER && transferCount < 12) begin
-         tempResult[11 - transferCount] <= ADC_SDO;
-      end
-   end
+            TRANSFER:     nextState = (transferCount >= 4'd12) ? WAIT : TRANSFER;
 
-   // Result register (fixing multiple drivers issue)
-   always_ff @(posedge clk or negedge reset_n) begin
-      if (!reset_n) begin
-         result <= 12'b0;
-      end else if (state == TRANSFER && transferCount == 11) begin
-         result <= tempResult;
-      end
-   end
+            WAIT:         nextState = CONVST_HIGH;
 
-   // Transfer count logic
-   always_ff @(posedge clk or negedge reset_n) begin
-      if (!reset_n) begin
-         transferCount <= 4'b0;
-      end else if (state == TRANSFER && transferCount < 12) begin
-         transferCount <= transferCount + 4'b1;
-      end else if (state == WAIT) begin
-         transferCount <= 4'b0;
-      end
-   end
+            default:      nextState = HOLD;
+        endcase
+    end
 
-   // SPI Clock (SCK) generation
-   assign ADC_SCK = (state == TRANSFER) ? clk : 1'b0;
+    // ============================================================================
+    // State Register and Config Word Update
+    // ============================================================================
+    always_ff @(negedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            state      <= HOLD;
+            configWord <= 12'b0;
+        end else begin
+            state <= nextState;
+
+            if (state == CONVST_HIGH) begin
+                // Format: [S=1, SEQ=chan[0], BIP=chan[2], UNI=chan[1], SGL=1, x=0] + padding
+                configWord <= {1'b1, chan[0], chan[2:1], 1'b1, 1'b0, 6'b000000};
+            end
+        end
+    end
+
+    // ============================================================================
+    // Serial Data Output (ADC_SDI)
+    // Send 12-bit configWord during TRANSFER phase
+    // ============================================================================
+    always_ff @(negedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            ADC_SDI <= 1'b0;
+        end else if (state == CONVST_LOW) begin
+            ADC_SDI <= configWord[11];  // Load MSB before transfer
+        end else if (state == TRANSFER && transferCount < 12) begin
+            ADC_SDI <= configWord[11 - transferCount];
+        end else begin
+            ADC_SDI <= 1'b0;
+        end
+    end
+
+    // ============================================================================
+    // Serial Data Input (ADC_SDO) → Capture ADC bits during TRANSFER
+    // ============================================================================
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            tempResult <= 12'b0;
+        end else if (state == TRANSFER && transferCount < 12) begin
+            tempResult[11 - transferCount] <= ADC_SDO;
+        end
+    end
+
+    // ============================================================================
+    // Final ADC Result Latching
+    // ============================================================================
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            result <= 12'b0;
+        end else if (state == TRANSFER && transferCount == 11) begin
+            result <= tempResult;
+        end
+    end
+
+    // ============================================================================
+    // Transfer Counter: Tracks 12-bit SPI transfer
+    // ============================================================================
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            transferCount <= 4'd0;
+        end else if (state == TRANSFER && transferCount < 12) begin
+            transferCount <= transferCount + 1;
+        end else if (state == WAIT) begin
+            transferCount <= 4'd0;
+        end
+    end
+
+    // ============================================================================
+    // ADC SPI Clock Output
+    // ============================================================================
+    assign ADC_SCK = (state == TRANSFER) ? clk : 1'b0;
 
 endmodule
