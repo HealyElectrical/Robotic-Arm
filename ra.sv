@@ -12,8 +12,14 @@ module ra(
 	output logic servo_pwm2, servo_pwm3, servo_pwm4,servo_pwm6, servo_pwm5,           // ✅ PWM Output for Second Motor
    output logic red, green, blue, // DM LEDs
 	input logic enc2_a, enc2_b,  // Second encoder for stepper
-output logic dir_pulse, step_pulse// Stepper direction and step outputs
-
+output logic dir_pulse, step_pulse,// Stepper direction and step outputs
+	output logic CAM_XCLK,         // Generated 24 MHz clock for camera
+    output logic CAM_SIOC,         // SCCB clock
+    inout  tri   CAM_SIOD,         // SCCB data
+    input  logic CAM_PCLK,         // Pixel clock from camera
+    input  logic CAM_VSYNC,        // Frame sync
+    input  logic CAM_HREF,         // Row sync
+    input  logic [7:0] CAM_D      // Data bus D0-D7 from camera
 	
 );
 
@@ -414,8 +420,105 @@ pwm_generator pwm_inst5 (
     .step(step_pulse)
 );
 	
-	
-	
+	    // ------------------------------------------------------------
+// OV7670 Configuration Module
+    // ------------------------------------------------------------
+
+
+//internal logic
+logic config_done;
+
+
+// OV7670 Configuration Module
+ov7670_config cam_init (
+    .clk(CLOCK_50),
+    .reset_n(reset_n),
+    .SIOC(CAM_SIOC),
+    .SIOD(CAM_SIOD),
+    .done(config_done)  // You can use this signal later to start image capture
+);
+
+logic enable_capture;
+
+always_comb begin
+    if (config_done)
+        enable_capture = 1;
+    else
+        enable_capture = 0;
+end
+    // ------------------------------------------------------------
+// XCLK Generator (24 MHz from 50 MHz)
+    // ------------------------------------------------------------
+logic xclk_toggle;
+logic [1:0] clk_div;
+
+always_ff @(posedge CLOCK_50 or negedge reset_n) begin
+    if (!reset_n)
+        clk_div <= 0;
+    else
+        clk_div <= clk_div + 1;
+end
+
+assign CAM_XCLK = clk_div[1];  // 50 MHz ÷ 2^2 = 12.5 MHz (use PLL if you want 24 MHz exactly)
+
+// ================================================
+// OV7670 Pixel Capture Logic (inside ra.sv)
+// ================================================
+
+
+logic [15:0] pixel_data;
+logic [18:0] pixel_count;
+logic [16:0] frame_addr;
+logic capture_en, write_en;
+
+always_ff @(posedge CAM_PCLK or negedge reset_n) begin
+    if (!reset_n) begin
+        pixel_data  <= 16'd0;
+        pixel_count <= 0;
+        frame_addr  <= 0;
+        capture_en  <= 0;
+        write_en    <= 0;
+    end else if (config_done) begin
+        if (CAM_VSYNC) begin
+            // Start of new frame
+            pixel_count <= 0;
+            frame_addr  <= 0;
+            capture_en  <= 0;
+            write_en    <= 0;
+        end else if (CAM_HREF) begin
+            capture_en <= ~capture_en;
+
+            if (capture_en) begin
+                pixel_data[7:0] <= CAM_D;          // Second byte (LSB)
+                frame_addr      <= frame_addr + 1;
+                pixel_count     <= pixel_count + 1;
+                write_en        <= 1;              // Enable write on LSB
+            end else begin
+                pixel_data[15:8] <= CAM_D;         // First byte (MSB)
+                write_en         <= 0;
+            end
+        end else begin
+            write_en <= 0;  // No HREF → disable write
+        end
+    end
+end
+
+ // ------------------------------------------------------------
+    // ✅ BRAM Module Example (write-only for now)
+    // ------------------------------------------------------------
+
+frame_buffer fb_inst (
+    .wr_clk(CAM_PCLK),
+    .wr_en(write_en),
+    .wr_addr(frame_addr),
+    .wr_data(pixel_data),
+
+    .rd_clk(CLOCK_50),
+    .rd_addr(read_addr),      // <- connect this to your reader (e.g. HPS or FSM)
+    .rd_data(read_pixel)      // <- connect to Ethernet, display logic, etc.
+);
+
+
     // ------------------------------------------------------------
     // 7-Segment Display Logic (unchanged)
     // ------------------------------------------------------------
